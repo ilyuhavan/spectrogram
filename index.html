@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Живая спектрограмма</title>
+<meta name="description" content="Спектрограмма речи в реальном времени с микрофона: частоты 0–8000 Hz, автоматическая разметка пауз | и ||, подписи IPA. Для уроков фонетики.">
+<meta property="og:title" content="Живая спектрограмма">
+<meta property="og:description" content="Говорите в микрофон — и видите речь как на спектрограмме из учебника. Паузы | и || размечаются автоматически.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%226%22 fill=%22%23fbfbf8%22/%3E%3Cg fill=%22%2316171a%22%3E%3Crect x=%224%22 y=%2214%22 width=%224%22 height=%2214%22/%3E%3Crect x=%2210%22 y=%224%22 width=%224%22 height=%2224%22/%3E%3Crect x=%2222%22 y=%2216%22 width=%224%22 height=%2212%22/%3E%3C/g%3E%3Crect x=%2216%22 y=%224%22 width=%222%22 height=%2224%22 fill=%22%232346b8%22/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,600;1,400&family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one lecture-hall screen — toolbar, a printed-figure spectrogram card, rhythm line and fine controls below. */
+:root{
+  --bg:#eef0f2; --surface:#ffffff; --fg:#1b1d22; --muted:#5d6470; --line:#cfd4db;
+  --paper:#fbfbf8; --ink:#16171a; --accent:#2346b8; --accent-soft:#e3e9fb; --rec:#c8261e;
+  --f-display:"Spectral", "Times New Roman", Georgia, serif;
+  --f-ui:"Golos Text", system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  --f-mono:"JetBrains Mono", ui-monospace, Consolas, monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#15171b; --surface:#1f2228; --fg:#e8eaee; --muted:#9aa2ae; --line:#353a43;
+  --accent:#8fa6ff; --accent-soft:#283252; --rec:#ff6b5e; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#15171b; --surface:#1f2228; --fg:#e8eaee; --muted:#9aa2ae; --line:#353a43;
+  --accent:#8fa6ff; --accent-soft:#283252; --rec:#ff6b5e; color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--f-ui);padding:20px 16px 40px}
+.wrap{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px}
+h1{font:600 30px/1.1 var(--f-display);margin:0;letter-spacing:-.01em;text-wrap:balance}
+header p{margin:0;color:var(--muted);font-size:14px}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.sep{width:1px;height:28px;background:var(--line);margin:0 4px}
+button,.btn,select{font:500 14px var(--f-ui);color:var(--fg);background:var(--surface);border:1px solid var(--line);
+  border-radius:8px;padding:8px 12px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;min-height:38px}
+button:hover,.btn:hover,select:hover{border-color:var(--muted)}
+button:focus-visible,.btn:focus-within,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button:disabled{opacity:.45;cursor:default}
+#rec{background:var(--rec);border-color:var(--rec);color:#fff;font-weight:600;padding-inline:16px}
+#rec .dot{width:10px;height:10px;border-radius:50%;background:#fff}
+#rec.on .dot{border-radius:2px}
+#rec.on{animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--rec) 25%,transparent)}}
+@media (prefers-reduced-motion:reduce){#rec.on{animation:none}}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--surface)}
+.seg button{border:0;border-radius:0;min-height:36px}
+.seg button[aria-pressed="true"]{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.btn input{display:none}
+.meter{width:90px;height:8px;border-radius:4px;background:var(--line);overflow:hidden}
+.meter i{display:block;height:100%;width:0;background:var(--accent);transition:width .08s linear}
+.status{font-size:13px;color:var(--muted)}
+.status.err{color:var(--rec)}
+
+.figure{position:relative;background:var(--paper);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.figure canvas{display:block;width:100%;height:min(58vh,560px);min-height:300px;touch-action:manipulation}
+.figure:fullscreen{border-radius:0;display:flex;align-items:center;background:var(--paper)}
+.figure:fullscreen canvas{height:100vh}
+.tag{position:absolute;top:8px;right:12px;font:12px var(--f-ui);color:#6b6f76;background:#fbfbf8cc;padding:2px 8px;border-radius:4px}
+
+.pop{position:absolute;z-index:5;background:#fff;color:#16171a;border:1px solid #c9ced6;border-radius:8px;padding:8px;
+  box-shadow:0 8px 24px rgba(0,0,0,.18);display:flex;flex-direction:column;gap:6px;width:260px}
+.pop input{font:18px var(--f-display);padding:6px 8px;border:1px solid #c9ced6;border-radius:6px;width:100%;color:#16171a;background:#fff}
+.ipa{display:flex;flex-wrap:wrap;gap:3px}
+.ipa button{min-height:28px;padding:2px 7px;font:16px var(--f-display);background:#f3f4f6;color:#16171a;border-color:#dde1e6}
+.pop .row{display:flex;gap:6px;justify-content:flex-end}
+.pop .row button{min-height:30px;padding:4px 10px;background:#f3f4f6;color:#16171a;border-color:#dde1e6}
+.pop .row button.primary{background:#2346b8;color:#fff;border-color:#2346b8}
+
+.rhythm{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:34px}
+.rhythm .lbl{font-size:13px;color:var(--muted);margin-right:4px}
+.chip{font:13px var(--f-mono);padding:4px 9px;border-radius:6px;background:var(--surface);border:1px solid var(--line);font-variant-numeric:tabular-nums}
+.chip.p{background:var(--accent-soft);border-color:transparent;color:var(--accent);font-weight:500}
+.chip.p b{font-family:var(--f-display);font-size:16px;margin-right:4px}
+
+.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px 22px;background:var(--surface);
+  border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.ctl{display:flex;flex-direction:column;gap:4px;min-width:0}
+.ctl label{font-size:13px;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
+.ctl label output{font:12px var(--f-mono);color:var(--fg)}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.help{color:var(--muted);font-size:13.5px;max-width:80ch;margin:0}
+.help b{color:var(--fg);font-weight:500}
+kbd{font:12px var(--f-mono);border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;background:var(--surface)}
+@media (max-width:600px){.sep{display:none}h1{font-size:24px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Живая спектрограмма</h1>
+    <p>Говорите в микрофон — звук рисуется так же, как на слайде: частота 0–8000 Hz, время слева направо, паузы видны как белые промежутки.</p>
+  </header>
+
+  <div class="toolbar">
+    <button id="rec" title="Пробел"><span class="dot"></span><span id="recTxt">Запись</span></button>
+    <button id="play" disabled>▶ Прослушать</button>
+    <div class="meter" title="Уровень микрофона"><i id="lvl"></i></div>
+    <span class="sep"></span>
+    <label class="btn">Открыть аудиофайл<input type="file" id="file" accept="audio/*,video/*"></label>
+    <button id="demo">Пример</button>
+    <button id="clear">Очистить</button>
+    <span class="sep"></span>
+    <div class="seg" role="group" aria-label="Тип спектрограммы">
+      <button id="wide" aria-pressed="true" title="Окно 5 мс: видны форманты, как на слайде">Широкополосная</button>
+      <button id="narrow" aria-pressed="false" title="Окно 30 мс: видны гармоники (интонация)">Узкополосная</button>
+    </div>
+    <select id="maxhz" aria-label="Верхняя частота"><option value="8000" selected>до 8000 Hz</option><option value="5000">до 5000 Hz</option><option value="4000">до 4000 Hz</option></select>
+    <select id="view" aria-label="Окно времени"><option value="3">3 с на экране</option><option value="5" selected>5 с на экране</option><option value="10">10 с на экране</option></select>
+    <span class="sep"></span>
+    <button id="fs">⛶ Во весь экран</button>
+    <button id="png">Сохранить картинку</button>
+  </div>
+  <div class="status" id="status">Пример уже загружен (синтезированная речь). Нажмите «Запись» и разрешите доступ к микрофону.</div>
+
+  <div class="figure" id="fig">
+    <canvas id="cv"></canvas>
+    <span class="tag" id="tag">пример</span>
+    <div class="pop" id="pop" hidden>
+      <input id="popIn" placeholder="[eː], FP, [ʃ]…" autocomplete="off">
+      <div class="ipa" id="ipa"></div>
+      <div class="row"><button id="popDel">Удалить</button><button id="popCancel">Отмена</button><button id="popOk" class="primary">Готово</button></div>
+    </div>
+  </div>
+
+  <div class="rhythm" id="rhythm"></div>
+
+  <div class="toolbar">
+    <span class="status">Клик по спектрограмме:</span>
+    <div class="seg" role="group" aria-label="Действие по клику">
+      <button id="mLabel" aria-pressed="true">Поставить подпись</button>
+      <button id="mPlay" aria-pressed="false">Слушать с этого места</button>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="ctl"><label for="range">Контраст (динамический диапазон) <output id="rangeO">50 dB</output></label><input type="range" id="range" min="30" max="90" value="50"></div>
+    <div class="ctl"><label for="bright">Яркость <output id="brightO">0 dB</output></label><input type="range" id="bright" min="-25" max="25" value="0"></div>
+    <div class="ctl"><label for="sil">Порог тишины (ниже пика) <output id="silO">32 dB</output></label><input type="range" id="sil" min="15" max="55" value="32"></div>
+    <div class="ctl"><label for="minp">Минимальная пауза <output id="minpO">150 ms</output></label><input type="range" id="minp" min="60" max="400" step="10" value="150"></div>
+    <div class="ctl"><label for="longp">Граница «|» и «||» <output id="longpO">500 ms</output></label><input type="range" id="longp" min="200" max="1500" step="50" value="500"></div>
+  </div>
+
+  <p class="help"><b>Как показать студентам.</b> Нажмите <kbd>Пробел</kbd> или «Запись» и произнесите фразу с паузой, например <i>I went | to the store ||</i>. Остановите запись — паузы отметятся сами: короткая <b>|</b> и длинная <b>||</b> (границу можно сдвинуть ползунком). Кликните под нужным звуком, чтобы подписать его, например [eː], [ʃ] или FP (filled pause, «эээ»). Для фонетики выключено шумоподавление микрофона, поэтому лучше говорить в тихом классе. Работает в любом современном браузере на компьютере, планшете и телефоне; при первой записи браузер спросит разрешение на микрофон. Запись никуда не отправляется и остаётся только на вашем устройстве.</p>
+</div>
+
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+const cv = $('cv'), cx = cv.getContext('2d');
+const spec = document.createElement('canvas'), sx = spec.getContext('2d');
+
+const MAX_SEC = 120;
+const S = { sr: 22050, buf: new Float32Array(22050 * MAX_SEC), len: 0,
+  cols: [], energy: [], next: 0, peakDb: -200, labels: [], recording: false, demo: false };
+const P = { wide: true, maxHz: 8000, view: 5, range: 50, bright: 0, sil: 32, minp: 150, longp: 500 };
+let A = null; // analysis params
+let actx = null, stream = null, proc = null, srcNode = null;
+let player = null, playStart = 0, playOffset = 0;
+let clickMode = 'label';
+let dirty = true, pauses = [];
+
+/* ---------- FFT ---------- */
+const fftCache = {};
+function fftTables(n){
+  if (fftCache[n]) return fftCache[n];
+  const rev = new Uint32Array(n), bits = Math.log2(n);
+  for (let i = 0; i < n; i++){ let r = 0, x = i; for (let b = 0; b < bits; b++){ r = (r << 1) | (x & 1); x >>= 1; } rev[i] = r; }
+  const cos = new Float32Array(n/2), sin = new Float32Array(n/2);
+  for (let i = 0; i < n/2; i++){ cos[i] = Math.cos(2*Math.PI*i/n); sin[i] = -Math.sin(2*Math.PI*i/n); }
+  return (fftCache[n] = { rev, cos, sin });
+}
+function fft(re, im){
+  const n = re.length, { rev, cos, sin } = fftTables(n);
+  for (let i = 0; i < n; i++){ const j = rev[i]; if (j > i){ let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }
+  for (let size = 2; size <= n; size <<= 1){
+    const half = size >> 1, step = n / size;
+    for (let i = 0; i < n; i += size){
+      for (let j = 0, k = 0; j < half; j++, k += step){
+        const a = i + j, b = a + half;
+        const tr = re[b]*cos[k] - im[b]*sin[k], ti = re[b]*sin[k] + im[b]*cos[k];
+        re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
+      }
+    }
+  }
+}
+
+/* ---------- analysis ---------- */
+function setupAnalysis(){
+  const sr = S.sr, win = Math.round(sr * (P.wide ? 0.005 : 0.03));
+  let n = 1; while (n < win) n <<= 1; n = Math.max(512, n * 2);
+  const hop = Math.max(1, Math.round(sr * 0.003));
+  const hann = new Float32Array(win);
+  for (let i = 0; i < win; i++) hann[i] = 0.5 - 0.5*Math.cos(2*Math.PI*i/(win-1));
+  const binHz = sr / n, nBins = Math.min(n/2, Math.ceil(Math.min(8000, sr/2) / binHz) + 2);
+  A = { win, n, hop, hann, binHz, nBins, re: new Float32Array(n), im: new Float32Array(n) };
+  S.cols = []; S.energy = []; S.next = 0; S.peakDb = -200;
+  processAvailable(); dirty = true;
+}
+function processAvailable(){
+  const { win, n, hop, hann, nBins, re, im } = A, b = S.buf;
+  let added = false;
+  while (S.next + win <= S.len){
+    const s = S.next; re.fill(0); im.fill(0);
+    let e = 0;
+    for (let i = 0; i < win; i++){
+      const x = b[s+i], prev = s+i > 0 ? b[s+i-1] : 0;
+      e += x*x; re[i] = (x - 0.97*prev) * hann[i];
+    }
+    fft(re, im);
+    const col = new Float32Array(nBins);
+    for (let k = 0; k < nBins; k++){
+      const d = 10*Math.log10(re[k]*re[k] + im[k]*im[k] + 1e-12);
+      col[k] = d; if (d > S.peakDb) S.peakDb = d;
+    }
+    S.cols.push(col); S.energy.push(10*Math.log10(e/win + 1e-12));
+    S.next += hop; added = true;
+  }
+  if (added){ dirty = true; }
+}
+const duration = () => S.len / S.sr;
+const colTime = i => (i*A.hop + A.win/2) / S.sr;
+
+/* ---------- pause detection ---------- */
+function detectPauses(){
+  const E = S.energy, n = E.length; pauses = [];
+  if (n < 5) return;
+  let mx = -200; for (const e of E) if (e > mx) mx = e;
+  const thr = mx - P.sil, sec = A.hop / S.sr;
+  const speech = E.map(e => e >= thr);
+  // drop speech blips shorter than 40 ms (clicks)
+  const blip = Math.round(0.04 / sec);
+  for (let i = 0; i < n;){ if (!speech[i]){ i++; continue; } let j = i; while (j < n && speech[j]) j++; if (j - i < blip) for (let k = i; k < j; k++) speech[k] = false; i = j; }
+  let firstSpeech = speech.indexOf(true);
+  if (firstSpeech < 0) return;
+  let lastSpeech = speech.lastIndexOf(true);
+  const runs = [];
+  let i = firstSpeech;
+  while (i < n){
+    if (speech[i]){ let j = i; while (j < n && speech[j]) j++; runs.push({ s: true, a: i, b: j }); i = j; }
+    else { let j = i; while (j < n && !speech[j]) j++; runs.push({ s: false, a: i, b: j, trailing: j >= n }); i = j; }
+  }
+  for (const r of runs){
+    const dur = (r.b - r.a) * sec * 1000;
+    if (!r.s && dur >= P.minp && (!r.trailing || S.recording)){
+      pauses.push({ t0: colTime(r.a), t1: colTime(r.b - 1), ms: dur, long: dur >= P.longp, ongoing: r.trailing });
+    }
+  }
+  // rhythm line
+  const parts = [];
+  let cursor = colTime(firstSpeech);
+  for (const p of pauses){ parts.push({ speech: p.t0 - cursor }); parts.push(p); cursor = p.t1; }
+  const end = S.recording ? (pauses.length && pauses[pauses.length-1].ongoing ? null : duration()) : colTime(lastSpeech);
+  if (end != null) parts.push({ speech: end - cursor });
+  renderRhythm(parts);
+}
+function renderRhythm(parts){
+  const el = $('rhythm'); el.textContent = '';
+  const l = document.createElement('span'); l.className = 'lbl'; l.textContent = 'Ритм фразы:'; el.append(l);
+  if (!parts.length){ const c = document.createElement('span'); c.className = 'lbl'; c.textContent = 'пауз пока нет'; el.append(c); return; }
+  for (const p of parts){
+    const c = document.createElement('span');
+    if (p.speech != null){ if (p.speech < 0.03) continue; c.className = 'chip'; c.textContent = 'речь ' + p.speech.toFixed(2) + ' с'; }
+    else { c.className = 'chip p'; const b = document.createElement('b'); b.textContent = p.long ? '||' : '|';
+      c.append(b, document.createTextNode((p.long ? 'длинная ' : 'короткая ') + (p.ms/1000).toFixed(2) + ' с' + (p.ongoing ? '…' : ''))); }
+    el.append(c);
+  }
+}
+
+/* ---------- drawing ---------- */
+const M = { L: 62, R: 18, T: 44, B: 84 };
+let yMap = null, yMapKey = '';
+function view(){
+  const dur = duration();
+  if (S.recording){ const span = P.view; return { t0: Math.max(0, dur - span), span }; }
+  return { t0: 0, span: Math.max(P.view, dur) };
+}
+function draw(){
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W*dpr) || cv.height !== Math.round(H*dpr)){ cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr); }
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const narrowScreen = W < 520;
+  const L = narrowScreen ? 46 : M.L, pw = Math.max(10, Math.floor(W - L - M.R)), ph = Math.max(10, Math.floor(H - M.T - M.B));
+  cx.fillStyle = '#fbfbf8'; cx.fillRect(0, 0, W, H);
+
+  // spectrogram image
+  if (spec.width !== pw || spec.height !== ph){ spec.width = pw; spec.height = ph; }
+  const key = [ph, P.maxHz, A.binHz, A.nBins].join();
+  if (key !== yMapKey){
+    yMap = { b: new Int32Array(ph), f: new Float32Array(ph) };
+    for (let y = 0; y < ph; y++){ const hz = (1 - (y + 0.5)/ph) * P.maxHz; const fb = Math.min(A.nBins - 1.001, hz / A.binHz); yMap.b[y] = Math.floor(fb); yMap.f[y] = fb - Math.floor(fb); }
+    yMapKey = key;
+  }
+  const img = sx.createImageData(pw, ph), u32 = new Uint32Array(img.data.buffer);
+  const { t0, span } = view(), ref = S.peakDb + P.bright, lo = ref - P.range, inv = 1 / P.range;
+  const pr = 251, pg = 251, pb = 248, ir = 18, ig = 19, ib = 22;
+  const lut = new Uint32Array(256);
+  for (let i = 0; i < 256; i++){ const g = Math.pow(i/255, 0.85); const r = pr + (ir-pr)*g, gg = pg + (ig-pg)*g, b = pb + (ib-pb)*g; lut[i] = (255 << 24) | (Math.round(b) << 16) | (Math.round(gg) << 8) | Math.round(r); }
+  const nyq = S.sr / 2;
+  for (let x = 0; x < pw; x++){
+    const t = t0 + (x + 0.5) / pw * span;
+    const ci = Math.round((t * S.sr - A.win/2) / A.hop);
+    if (ci < 0 || ci >= S.cols.length){ for (let y = 0; y < ph; y++) u32[y*pw + x] = lut[0]; continue; }
+    const col = S.cols[ci];
+    for (let y = 0; y < ph; y++){
+      const b0 = yMap.b[y], f = yMap.f[y];
+      let v = col[b0] * (1 - f) + col[b0+1] * f;
+      if (b0 * A.binHz > nyq) v = -300;
+      let g = (v - lo) * inv; g = g < 0 ? 0 : g > 1 ? 1 : g;
+      u32[y*pw + x] = lut[(g*255) | 0];
+    }
+  }
+  sx.putImageData(img, 0, 0);
+  cx.imageSmoothingEnabled = true;
+  cx.drawImage(spec, L, M.T);
+
+  const ink = '#16171a', soft = '#6b6f76', acc = '#2346b8';
+  const X = t => L + (t - t0) / span * pw;
+  const bottom = M.T + ph;
+
+  // pauses
+  for (const p of pauses){
+    const a = X(p.t0), b = X(p.t1);
+    if (b < L || a > L + pw) continue;
+    const ca = Math.max(L, a), cb = Math.min(L + pw, b), mid = (ca + cb) / 2;
+    cx.fillStyle = 'rgba(35,70,184,0.07)'; cx.fillRect(ca, M.T, cb - ca, ph);
+    cx.strokeStyle = 'rgba(35,70,184,0.55)'; cx.setLineDash([4, 4]); cx.lineWidth = 1;
+    cx.beginPath(); cx.moveTo(ca + .5, M.T); cx.lineTo(ca + .5, bottom); if (!p.ongoing){ cx.moveTo(cb - .5, M.T); cx.lineTo(cb - .5, bottom); } cx.stroke(); cx.setLineDash([]);
+    cx.fillStyle = acc; cx.textAlign = 'center'; cx.textBaseline = 'alphabetic';
+    cx.font = '600 28px Spectral, "Times New Roman", serif';
+    cx.fillText(p.long ? '||' : '|', mid, M.T - 10);
+    const rowY = bottom + 62;
+    cx.font = '15px Spectral, "Times New Roman", serif'; cx.fillStyle = ink;
+    if (cb - ca > 70){ cx.fillText('silent pause', mid, rowY); }
+    cx.font = '11px "JetBrains Mono", monospace'; cx.fillStyle = soft;
+    cx.fillText((p.ms/1000).toFixed(2) + ' s' + (p.ongoing ? '…' : ''), mid, rowY + 15);
+  }
+
+  // frame
+  cx.strokeStyle = ink; cx.lineWidth = 1; cx.strokeRect(L + .5, M.T + .5, pw - 1, ph - 1);
+
+  // y axis
+  cx.fillStyle = ink; cx.textAlign = 'right'; cx.textBaseline = 'middle';
+  cx.font = '14px Spectral, "Times New Roman", serif';
+  const step = P.maxHz >= 8000 ? 1000 : 500;
+  for (let f = 0; f <= P.maxHz; f += step){
+    const y = bottom - f / P.maxHz * ph;
+    cx.beginPath(); cx.moveTo(L - 5, y + .5); cx.lineTo(L, y + .5); cx.stroke();
+    if (f % (step*2) === 0 || f === P.maxHz) cx.fillText(String(f), L - 8, Math.min(Math.max(y, M.T + 6), bottom - 2));
+  }
+  cx.textAlign = 'center'; cx.fillText('Hz', L - 22, M.T - 18);
+
+  // time ticks
+  cx.font = '11px "JetBrains Mono", monospace'; cx.fillStyle = soft; cx.textBaseline = 'top';
+  const tstep = span <= 3 ? 0.25 : span <= 6 ? 0.5 : span <= 15 ? 1 : 2;
+  for (let t = Math.ceil(t0 / tstep) * tstep; t <= t0 + span + 1e-6; t += tstep){
+    const x = X(t); cx.strokeStyle = ink; cx.beginPath(); cx.moveTo(x + .5, bottom); cx.lineTo(x + .5, bottom + 4); cx.stroke();
+    if (x > L + 14 && x < L + pw - 14) cx.fillText(t.toFixed(tstep < 1 ? 2 : 0).replace(/\.?0+$/, '') + ' s', x, bottom + 6);
+  }
+  cx.font = '15px Spectral, "Times New Roman", serif'; cx.fillStyle = ink; cx.textAlign = 'right'; cx.textBaseline = 'middle';
+  cx.fillText('time', L - 6, bottom + 12);
+
+  // labels
+  cx.textAlign = 'center'; cx.textBaseline = 'alphabetic';
+  for (const lb of S.labels){
+    const x = X(lb.t); if (x < L - 4 || x > L + pw + 4) continue;
+    cx.strokeStyle = ink; cx.beginPath(); cx.moveTo(x + .5, bottom + 18); cx.lineTo(x + .5, bottom + 23); cx.stroke();
+    cx.fillStyle = ink; cx.font = '17px Spectral, "Times New Roman", serif';
+    cx.fillText(lb.text, x, bottom + 40);
+  }
+
+  // live edge / play cursor
+  if (S.recording){
+    const x = X(duration()); cx.fillStyle = '#c8261e'; cx.fillRect(Math.min(x, L + pw - 2), M.T, 2, ph);
+  }
+  if (player){
+    const t = playOffset + (actx.currentTime - playStart);
+    const x = X(t); if (x >= L && x <= L + pw){ cx.fillStyle = '#c8261e'; cx.fillRect(x - 1, M.T - 4, 2, ph + 8); }
+  }
+  if (!S.len){
+    cx.fillStyle = soft; cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.font = '16px "Golos Text", system-ui, sans-serif';
+    cx.fillText('Нажмите «Запись» или пробел и скажите фразу', L + pw/2, M.T + ph/2);
+  }
+  draw.geo = { L, pw, t0, span, bottom, ph };
+}
+
+/* ---------- loop ---------- */
+let lastPause = 0;
+function loop(now){
+  if (S.recording){ processAvailable(); if (now - lastPause > 120){ detectPauses(); lastPause = now; } }
+  if (dirty || S.recording || player){ draw(); dirty = false; }
+  requestAnimationFrame(loop);
+}
+
+/* ---------- data helpers ---------- */
+function resetData(sr){
+  S.sr = sr; S.buf = new Float32Array(Math.round(sr * MAX_SEC)); S.len = 0; S.labels = []; pauses = [];
+  setupAnalysis(); detectPauses();
+}
+function loadSamples(data, sr, labels){
+  stopPlay();
+  const n = Math.min(data.length, Math.round(sr * MAX_SEC));
+  S.sr = sr; S.buf = new Float32Array(Math.round(sr * MAX_SEC)); S.buf.set(data.subarray(0, n)); S.len = n;
+  S.labels = labels || [];
+  setupAnalysis(); detectPauses(); $('play').disabled = !S.len; dirty = true;
+}
+function setTag(t){ $('tag').hidden = !t; $('tag').textContent = t || ''; }
+function setStatus(t, err){ const s = $('status'); s.textContent = t; s.classList.toggle('err', !!err); }
+
+/* ---------- microphone ---------- */
+function ensureCtx(){ if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === 'suspended') actx.resume(); return actx; }
+async function startRec(){
+  stopPlay(); hidePop();
+  try {
+    ensureCtx();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('nomedia');
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+  } catch (e){
+    let framed = false; try { framed = window.top !== window.self; } catch (_) { framed = true; }
+    if (framed){ setStatus('Эта страница открыта внутри другого сайта, и микрофон здесь заблокирован. Откройте ссылку в отдельной вкладке браузера.', true); return; }
+    setStatus(e && e.name === 'NotAllowedError'
+      ? 'Доступ к микрофону запрещён. Разрешите его в адресной строке браузера (значок замка или камеры) и нажмите «Запись» ещё раз.'
+      : 'Микрофон недоступен. Если ссылка открылась внутри Telegram или другого приложения, откройте её в браузере (Chrome, Safari, Edge). Аудиофайл можно загрузить и без микрофона.', true);
+    return;
+  }
+  resetData(actx.sampleRate);
+  srcNode = actx.createMediaStreamSource(stream);
+  proc = actx.createScriptProcessor(2048, 1, 1);
+  const mute = actx.createGain(); mute.gain.value = 0;
+  proc.onaudioprocess = ev => {
+    if (!S.recording) return;
+    const inp = ev.inputBuffer.getChannelData(0);
+    const room = S.buf.length - S.len, n = Math.min(room, inp.length);
+    S.buf.set(inp.subarray(0, n), S.len); S.len += n;
+    let e = 0; for (let i = 0; i < inp.length; i++) e += inp[i]*inp[i];
+    const db = 10*Math.log10(e/inp.length + 1e-12);
+    $('lvl').style.width = Math.max(0, Math.min(100, (db + 70) * 1.6)) + '%';
+    if (room <= inp.length) setTimeout(stopRec, 0);
+  };
+  srcNode.connect(proc); proc.connect(mute); mute.connect(actx.destination);
+  S.recording = true; S.demo = false; setTag('');
+  $('rec').classList.add('on'); $('recTxt').textContent = 'Стоп'; $('play').disabled = true;
+  setStatus('Идёт запись. Говорите. Пробел или «Стоп» — остановить (максимум ' + MAX_SEC + ' с).');
+}
+function stopRec(){
+  if (!S.recording) return;
+  S.recording = false;
+  try { srcNode.disconnect(); proc.disconnect(); } catch (_) {}
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null; $('lvl').style.width = '0%';
+  $('rec').classList.remove('on'); $('recTxt').textContent = 'Запись';
+  processAvailable(); detectPauses();
+  $('play').disabled = !S.len; dirty = true;
+  setStatus(pauses.length ? 'Готово. Найдено пауз: ' + pauses.length + '. Кликните под звуком, чтобы подписать его.' : 'Готово. Паузы не найдены: попробуйте сказать фразу с остановкой или понизить «Минимальную паузу».');
+}
+
+/* ---------- playback ---------- */
+function startPlay(from){
+  if (!S.len || S.recording) return;
+  ensureCtx(); stopPlay();
+  const ab = actx.createBuffer(1, S.len, S.sr); ab.copyToChannel(S.buf.subarray(0, S.len), 0);
+  const src = actx.createBufferSource(); src.buffer = ab; src.connect(actx.destination);
+  playOffset = Math.max(0, Math.min(from || 0, duration() - 0.01));
+  src.start(0, playOffset); playStart = actx.currentTime; player = src;
+  src.onended = () => { if (player === src){ player = null; $('play').textContent = '▶ Прослушать'; dirty = true; } };
+  $('play').textContent = '■ Остановить';
+}
+function stopPlay(){ if (player){ const p = player; player = null; try { p.stop(); } catch (_) {} $('play').textContent = '▶ Прослушать'; dirty = true; } }
+
+/* ---------- file ---------- */
+$('file').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  if (S.recording) stopRec();
+  try {
+    ensureCtx();
+    const ab = await actx.decodeAudioData(await f.arrayBuffer());
+    const n = ab.length, mono = new Float32Array(n);
+    for (let c = 0; c < ab.numberOfChannels; c++){ const d = ab.getChannelData(c); for (let i = 0; i < n; i++) mono[i] += d[i] / ab.numberOfChannels; }
+    loadSamples(mono, ab.sampleRate, []); S.demo = false; setTag(f.name);
+    setStatus('Загружен файл «' + f.name + '»' + (n / ab.sampleRate > MAX_SEC ? ' (показаны первые ' + MAX_SEC + ' с)' : '') + '.');
+  } catch (_){ setStatus('Не удалось прочитать этот файл. Подойдут mp3, wav, m4a или ogg.', true); }
+  e.target.value = '';
+});
+
+/* ---------- synthesized example ---------- */
+function makeDemo(){
+  const sr = 22050, out = [];
+  let seed = 7; const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff) * 2 - 1;
+  const reson = (x, f, bw) => { const r = Math.exp(-Math.PI*bw/sr), b = 2*r*Math.cos(2*Math.PI*f/sr), c = -r*r, a = 1 - b - c; let y1 = 0, y2 = 0; const y = new Float32Array(x.length); for (let i = 0; i < x.length; i++){ const v = a*x[i] + b*y1 + c*y2; y[i] = v; y2 = y1; y1 = v; } return y; };
+  const env = (y, amp) => { let m = 0; for (const v of y) m = Math.max(m, Math.abs(v)); const r = Math.round(0.025*sr); for (let i = 0; i < y.length; i++){ const g = Math.min(1, i/r, (y.length-1-i)/r); y[i] = y[i]/(m||1)*amp*g; } return y; };
+  const vowel = (dur, F, f0a, f0b, amp) => {
+    const n = Math.round(dur*sr), x = new Float32Array(n); let ph = 0;
+    for (let i = 0; i < n; i++){ const f0 = f0a + (f0b - f0a)*i/n; ph += f0/sr; if (ph >= 1){ ph -= 1; x[i] = 1; } x[i] += rnd()*0.02; }
+    let y = x; y = reson(y, 120, 200); for (const [f, bw] of F) y = reson(y, f, bw);
+    return env(y, amp);
+  };
+  const fric = (dur, amp) => { const n = Math.round(dur*sr), x = new Float32Array(n); for (let i = 0; i < n; i++) x[i] = rnd();
+    const a = reson(x, 2900, 900), b = reson(x, 4600, 1800), y = new Float32Array(n); for (let i = 0; i < n; i++) y[i] = a[i] + 0.6*b[i]; return env(y, amp); };
+  const sil = d => new Float32Array(Math.round(d*sr));
+  const segs = [], labels = []; let t = 0;
+  const add = (arr, lab) => { if (lab) labels.push({ t: t + arr.length/sr/2, text: lab }); segs.push(arr); t += arr.length/sr; };
+  add(sil(0.15));
+  add(vowel(0.42, [[480, 70], [1950, 110], [2600, 160]], 135, 112, 0.55), '[eː');
+  add(fric(0.24, 0.22), 'ʃ]');
+  add(vowel(0.34, [[520, 90], [1450, 120], [2500, 180]], 104, 100, 0.35), 'FP');
+  add(sil(0.72));
+  add(vowel(0.26, [[620, 80], [1750, 110], [2550, 160]], 128, 120, 0.5), '[ɛ]');
+  add(sil(0.3));
+  add(vowel(0.34, [[460, 70], [850, 90], [2600, 180]], 122, 108, 0.55), '[o');
+  add(vowel(0.13, [[260, 60], [1000, 300], [2200, 400]], 108, 104, 0.18), 'n]');
+  add(sil(0.2));
+  const total = segs.reduce((s, a) => s + a.length, 0), data = new Float32Array(total); let o = 0;
+  for (const s of segs){ data.set(s, o); o += s.length; }
+  for (let i = 0; i < total; i++) data[i] += rnd()*0.0006;
+  loadSamples(data, sr, labels); S.demo = true; setTag('пример: синтезированная речь');
+}
+
+/* ---------- labels ---------- */
+const IPA = ['ə','ɪ','iː','ʊ','uː','e','ɛ','æ','ʌ','ɑː','ɒ','ɔː','ɜː','eɪ','aɪ','ɔɪ','əʊ','aʊ','θ','ð','ʃ','ʒ','tʃ','dʒ','ŋ','ɹ','ː','ˈ','FP','[',']'];
+let popT = null, popIdx = -1;
+IPA.forEach(s => { const b = document.createElement('button'); b.type = 'button'; b.textContent = s;
+  b.addEventListener('click', () => { const i = $('popIn'); const p = i.selectionStart ?? i.value.length; i.value = i.value.slice(0, p) + s + i.value.slice(i.selectionEnd ?? p); i.focus(); i.selectionStart = i.selectionEnd = p + s.length; });
+  $('ipa').append(b); });
+function showPop(px, py, t, idx){
+  popT = t; popIdx = idx; const pop = $('pop'); pop.hidden = false;
+  const fw = $('fig').clientWidth, fh = $('fig').clientHeight;
+  pop.style.left = Math.max(6, Math.min(fw - 266, px - 130)) + 'px';
+  pop.style.top = Math.max(6, Math.min(fh - pop.offsetHeight - 6, py - pop.offsetHeight - 12)) + 'px';
+  $('popIn').value = idx >= 0 ? S.labels[idx].text : '';
+  $('popDel').hidden = idx < 0; $('popIn').focus();
+}
+function hidePop(){ $('pop').hidden = true; popIdx = -1; }
+function commitPop(){
+  const v = $('popIn').value.trim();
+  if (popIdx >= 0){ if (v) S.labels[popIdx].text = v; else S.labels.splice(popIdx, 1); }
+  else if (v) S.labels.push({ t: popT, text: v });
+  hidePop(); dirty = true;
+}
+$('popOk').onclick = commitPop;
+$('popCancel').onclick = hidePop;
+$('popDel').onclick = () => { if (popIdx >= 0) S.labels.splice(popIdx, 1); hidePop(); dirty = true; };
+$('popIn').addEventListener('keydown', e => { if (e.key === 'Enter'){ e.preventDefault(); commitPop(); } if (e.key === 'Escape') hidePop(); e.stopPropagation(); });
+
+cv.addEventListener('click', e => {
+  if (S.recording || !S.len || !draw.geo) return;
+  const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  const g = draw.geo; if (x < g.L || x > g.L + g.pw) return;
+  const t = g.t0 + (x - g.L) / g.pw * g.span;
+  if (clickMode === 'play'){ startPlay(t); return; }
+  let idx = -1, best = 22;
+  if (y > g.bottom + 14 && y < g.bottom + 50) S.labels.forEach((lb, i) => { const d = Math.abs(g.L + (lb.t - g.t0)/g.span*g.pw - x); if (d < best){ best = d; idx = i; } });
+  const rf = $('fig').getBoundingClientRect();
+  showPop(e.clientX - rf.left, e.clientY - rf.top, t, idx);
+});
+
+/* ---------- controls ---------- */
+$('rec').onclick = () => S.recording ? stopRec() : startRec();
+$('play').onclick = () => player ? stopPlay() : startPlay(0);
+$('demo').onclick = () => { if (S.recording) stopRec(); hidePop(); makeDemo(); setStatus('Пример: синтезированная фраза с гласными, [ʃ], заполненной паузой (FP), длинной || и короткой | паузой.'); };
+$('clear').onclick = () => { if (S.recording) stopRec(); stopPlay(); hidePop(); S.len = 0; S.labels = []; setupAnalysis(); detectPauses(); $('play').disabled = true; setTag(''); setStatus('Очищено. Нажмите «Запись».'); };
+function seg(a, b, on){ $(a).setAttribute('aria-pressed', on); $(b).setAttribute('aria-pressed', !on); }
+$('wide').onclick = () => { P.wide = true; seg('wide', 'narrow', true); setupAnalysis(); detectPauses(); };
+$('narrow').onclick = () => { P.wide = false; seg('wide', 'narrow', false); setupAnalysis(); detectPauses(); };
+$('mLabel').onclick = () => { clickMode = 'label'; seg('mLabel', 'mPlay', true); };
+$('mPlay').onclick = () => { clickMode = 'play'; seg('mLabel', 'mPlay', false); hidePop(); };
+$('maxhz').onchange = e => { P.maxHz = +e.target.value; dirty = true; };
+$('view').onchange = e => { P.view = +e.target.value; dirty = true; };
+const sliders = { range: ' dB', bright: ' dB', sil: ' dB', minp: ' ms', longp: ' ms' };
+for (const [id, unit] of Object.entries(sliders)){
+  $(id).addEventListener('input', e => { P[id] = +e.target.value; $(id + 'O').textContent = (id === 'bright' && P[id] > 0 ? '+' : '') + P[id] + unit;
+    if (id === 'sil' || id === 'minp' || id === 'longp') detectPauses(); dirty = true; });
+}
+$('fs').onclick = () => { const f = $('fig'); try { if (document.fullscreenElement) document.exitFullscreen(); else f.requestFullscreen().catch(() => setStatus('Полноэкранный режим недоступен в этом окне.', true)); } catch (_) {} };
+document.addEventListener('fullscreenchange', () => { dirty = true; });
+$('png').onclick = () => {
+  draw();
+  cv.toBlob(b => { if (!b) return; const a = document.createElement('a'); a.href = URL.createObjectURL(b);
+    a.download = 'spectrogram-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.png'; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000); }, 'image/png');
+};
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && !e.repeat && !(e.target instanceof HTMLInputElement) && !(e.target instanceof HTMLSelectElement)){
+    e.preventDefault(); S.recording ? stopRec() : startRec();
+  }
+});
+window.addEventListener('resize', () => { dirty = true; });
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { dirty = true; });
+
+setupAnalysis();
+makeDemo();
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
