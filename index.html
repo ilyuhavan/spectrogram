@@ -27,6 +27,7 @@
   --bg:#15171b; --surface:#1f2228; --fg:#e8eaee; --muted:#9aa2ae; --line:#353a43;
   --accent:#8fa6ff; --accent-soft:#283252; --rec:#ff6b5e; color-scheme:dark}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 html,body{margin:0}
 body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--f-ui);padding:20px 16px 40px}
 .wrap{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
@@ -80,6 +81,8 @@ button:disabled{opacity:.45;cursor:default}
   border:1px solid var(--line);border-radius:10px;padding:14px 16px}
 .ctl{display:flex;flex-direction:column;gap:4px;min-width:0}
 .ctl label{font-size:13px;color:var(--muted);display:flex;justify-content:space-between;gap:8px}
+.ctl label.chk{justify-content:flex-start;align-items:center;gap:8px;color:var(--fg);font-size:14px;min-height:28px}
+.chk input{width:18px;height:18px;accent-color:var(--accent)}
 .ctl label output{font:12px var(--f-mono);color:var(--fg)}
 input[type=range]{width:100%;accent-color:var(--accent)}
 .help{color:var(--muted);font-size:13.5px;max-width:80ch;margin:0}
@@ -141,6 +144,7 @@ kbd{font:12px var(--f-mono);border:1px solid var(--line);border-bottom-width:2px
     <div class="ctl"><label for="bright">Яркость <output id="brightO">0 dB</output></label><input type="range" id="bright" min="-25" max="25" value="0"></div>
     <div class="ctl"><label for="sil">Порог тишины (ниже пика) <output id="silO">32 dB</output></label><input type="range" id="sil" min="15" max="55" value="32"></div>
     <div class="ctl"><label for="minp">Минимальная пауза <output id="minpO">150 ms</output></label><input type="range" id="minp" min="60" max="400" step="10" value="150"></div>
+    <div class="ctl"><label>Фоновый шум класса</label><label class="chk"><input type="checkbox" id="denoise" checked> Скрывать (паузы остаются белыми)</label></div>
     <div class="ctl"><label for="longp">Граница «|» и «||» <output id="longpO">500 ms</output></label><input type="range" id="longp" min="200" max="1500" step="50" value="500"></div>
   </div>
 
@@ -157,7 +161,7 @@ const spec = document.createElement('canvas'), sx = spec.getContext('2d');
 const MAX_SEC = 120;
 const S = { sr: 22050, buf: new Float32Array(22050 * MAX_SEC), len: 0,
   cols: [], energy: [], next: 0, peakDb: -200, labels: [], recording: false, demo: false };
-const P = { wide: true, maxHz: 8000, view: 5, range: 50, bright: 0, sil: 32, minp: 150, longp: 500 };
+const P = { wide: true, maxHz: 8000, view: 5, range: 50, bright: 0, sil: 32, minp: 150, longp: 500, denoise: true };
 let A = null; // analysis params
 let actx = null, stream = null, proc = null, srcNode = null;
 let player = null, playStart = 0, playOffset = 0;
@@ -197,8 +201,12 @@ function setupAnalysis(){
   const hann = new Float32Array(win);
   for (let i = 0; i < win; i++) hann[i] = 0.5 - 0.5*Math.cos(2*Math.PI*i/(win-1));
   const binHz = sr / n, nBins = Math.min(n/2, Math.ceil(Math.min(8000, sr/2) / binHz) + 2);
-  A = { win, n, hop, hann, binHz, nBins, re: new Float32Array(n), im: new Float32Array(n) };
-  S.cols = []; S.energy = []; S.next = 0; S.peakDb = -200;
+  // weights that undo pre-emphasis, so pause detection hears the voice at its real level
+  const deW = new Float32Array(nBins);
+  for (let k = 0; k < nBins; k++){ const w = 2*Math.PI*k*binHz/sr; deW[k] = 1 / ((1 - 0.97*Math.cos(w))**2 + (0.97*Math.sin(w))**2); }
+  A = { win, n, hop, hann, binHz, nBins, deW, kLo: Math.ceil(250 / binHz), kMid: Math.round(3500 / binHz),
+        re: new Float32Array(n), im: new Float32Array(n) };
+  S.cols = []; S.energy = []; S.energyHi = []; S.next = 0; S.peakDb = -200;
   processAvailable(); dirty = true;
 }
 function processAvailable(){
@@ -206,18 +214,19 @@ function processAvailable(){
   let added = false;
   while (S.next + win <= S.len){
     const s = S.next; re.fill(0); im.fill(0);
-    let e = 0;
     for (let i = 0; i < win; i++){
       const x = b[s+i], prev = s+i > 0 ? b[s+i-1] : 0;
-      e += x*x; re[i] = (x - 0.97*prev) * hann[i];
+      re[i] = (x - 0.97*prev) * hann[i];
     }
     fft(re, im);
     const col = new Float32Array(nBins);
+    let low = 0, high = 0;
     for (let k = 0; k < nBins; k++){
-      const d = 10*Math.log10(re[k]*re[k] + im[k]*im[k] + 1e-12);
+      const pw = re[k]*re[k] + im[k]*im[k], d = 10*Math.log10(pw + 1e-12);
       col[k] = d; if (d > S.peakDb) S.peakDb = d;
+      if (k >= A.kLo && k * A.binHz <= 8000){ if (k < A.kMid) low += pw * A.deW[k]; else high += pw * A.deW[k]; }
     }
-    S.cols.push(col); S.energy.push(10*Math.log10(e/win + 1e-12));
+    S.cols.push(col); S.energy.push(10*Math.log10(low + 1e-12)); S.energyHi.push(10*Math.log10(high + 1e-12));
     S.next += hop; added = true;
   }
   if (added){ dirty = true; }
@@ -225,18 +234,49 @@ function processAvailable(){
 const duration = () => S.len / S.sr;
 const colTime = i => (i*A.hop + A.win/2) / S.sr;
 
+/* ---------- room noise floor (per frequency) ---------- */
+let lastFloor = 0;
+function computeFloor(){
+  const C = S.cols, n = C.length; S.floor = null;
+  if (n < 30) return;
+  const step = Math.max(1, Math.floor(n / 1500)), m = Math.floor((n - 1) / step) + 1;
+  const tmp = new Float32Array(m), fl = new Float32Array(A.nBins);
+  for (let k = 0; k < A.nBins; k++){
+    for (let j = 0; j < m; j++) tmp[j] = C[j * step][k];
+    tmp.sort(); fl[k] = tmp[Math.floor(0.2 * (m - 1))];
+  }
+  S.floor = fl; lastFloor = performance.now(); dirty = true;
+}
+
 /* ---------- pause detection ---------- */
 function detectPauses(){
-  const E = S.energy, n = E.length; pauses = [];
-  if (n < 5) return;
-  let mx = -200; for (const e of E) if (e > mx) mx = e;
-  const thr = mx - P.sil, sec = A.hop / S.sr;
-  const speech = E.map(e => e >= thr);
+  const n = S.energy.length; pauses = [];
+  if (!S.recording || performance.now() - lastFloor > 1000) computeFloor();
+  if (n < 20){ renderRhythm([]); return; }
+  const sec = A.hop / S.sr;
+  // voice band (250–3500 Hz) and hiss band (3500–8000 Hz, for s/ʃ/f) are judged separately
+  const bandSpeech = E => {
+    // smooth over ~30 ms so glottal pulses and short bursts don't flicker
+    const half = Math.max(1, Math.round(0.015 / sec)), cum = new Float64Array(n + 1);
+    for (let i = 0; i < n; i++) cum[i+1] = cum[i] + Math.pow(10, E[i] / 10);
+    const sm = new Float32Array(n);
+    for (let i = 0; i < n; i++){ const a = Math.max(0, i - half), b = Math.min(n, i + half + 1); sm[i] = 10*Math.log10((cum[b] - cum[a]) / (b - a) + 1e-12); }
+    // robust levels: room noise = 5th percentile, speech peak = 99th (ignores clicks and knocks)
+    const sorted = Float32Array.from(sm).sort(), pct = q => sorted[Math.floor(q * (n - 1))];
+    const floor = pct(0.05), peak = pct(0.99);
+    if (peak - floor < 10) return null;
+    let thr = Math.max(peak - P.sil, floor + 6);
+    if (thr > peak - 8) thr = (floor + peak) / 2;
+    return sm.map(e => e >= thr ? 1 : 0);
+  };
+  const lo = bandSpeech(S.energy), hi = bandSpeech(S.energyHi);
+  if (!lo && !hi){ renderRhythm([]); return; }
+  const speech = Array.from({ length: n }, (_, i) => !!((lo && lo[i]) || (hi && hi[i])));
   // drop speech blips shorter than 40 ms (clicks)
   const blip = Math.round(0.04 / sec);
   for (let i = 0; i < n;){ if (!speech[i]){ i++; continue; } let j = i; while (j < n && speech[j]) j++; if (j - i < blip) for (let k = i; k < j; k++) speech[k] = false; i = j; }
   let firstSpeech = speech.indexOf(true);
-  if (firstSpeech < 0) return;
+  if (firstSpeech < 0){ renderRhythm([]); return; }
   let lastSpeech = speech.lastIndexOf(true);
   const runs = [];
   let i = firstSpeech;
@@ -297,6 +337,8 @@ function draw(){
     yMapKey = key;
   }
   const img = sx.createImageData(pw, ph), u32 = new Uint32Array(img.data.buffer);
+  const fy = new Float32Array(ph), useFloor = P.denoise && S.floor;
+  if (useFloor) for (let y = 0; y < ph; y++){ const b0 = yMap.b[y], f = yMap.f[y]; fy[y] = S.floor[b0] * (1 - f) + S.floor[b0+1] * f + 9; }
   const { t0, span } = view(), ref = S.peakDb + P.bright, lo = ref - P.range, inv = 1 / P.range;
   const pr = 251, pg = 251, pb = 248, ir = 18, ig = 19, ib = 22;
   const lut = new Uint32Array(256);
@@ -312,6 +354,7 @@ function draw(){
       let v = col[b0] * (1 - f) + col[b0+1] * f;
       if (b0 * A.binHz > nyq) v = -300;
       let g = (v - lo) * inv; g = g < 0 ? 0 : g > 1 ? 1 : g;
+      if (useFloor){ let q = (v - fy[y]) * 0.125; g *= q < 0 ? 0 : q > 1 ? 1 : q; }
       u32[y*pw + x] = lut[(g*255) | 0];
     }
   }
@@ -568,6 +611,7 @@ $('wide').onclick = () => { P.wide = true; seg('wide', 'narrow', true); setupAna
 $('narrow').onclick = () => { P.wide = false; seg('wide', 'narrow', false); setupAnalysis(); detectPauses(); };
 $('mLabel').onclick = () => { clickMode = 'label'; seg('mLabel', 'mPlay', true); };
 $('mPlay').onclick = () => { clickMode = 'play'; seg('mLabel', 'mPlay', false); hidePop(); };
+$('denoise').onchange = e => { P.denoise = e.target.checked; dirty = true; };
 $('maxhz').onchange = e => { P.maxHz = +e.target.value; dirty = true; };
 $('view').onchange = e => { P.view = +e.target.value; dirty = true; };
 const sliders = { range: ' dB', bright: ' dB', sil: ' dB', minp: ' ms', longp: ' ms' };
